@@ -1,0 +1,39 @@
+{
+  "name": "rental-info-scrpper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "NestJS MVP for public water purifier rental comparison",
+  "license": "UNLICENSED",
+  "scripts": {
+    "crawl:ajd": "tsx src/crawl/ajd-water-purifier.crawler.ts",
+    "crawl:all": "tsx src/crawl/all-water-purifier.crawler.ts",
+    "crawl:csv": "tsx src/crawl/export-water-purifier-csv.ts",
+    "crawl:validate": "tsx src/crawl/validate-water-purifier-offers.ts", 
+    "build": "tsc -p tsconfig.build.json",
+    "crawl:miso": "tsx src/crawl/miso-water-purifier.crawler.ts",
+    "crawl:rentre": "tsx src/crawl/rentre-water-purifier.crawler.ts",
+    "start": "node dist/main.js",
+    "start:dev": "tsx watch src/main.ts",
+    "test": "jest --runInBand",
+    "test:watch": "jest --watch",
+    "test:e2e": "jest --config jest.config.ts --runInBand"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.1.6",
+    "@nestjs/core": "^11.1.6",
+    "@nestjs/platform-express": "^11.1.6",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@nestjs/testing": "^11.1.6",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^22.15.30",
+    "@types/supertest": "^6.0.3",
+    "jest": "^30.0.5",
+    "supertest": "^7.0.0",
+    "ts-jest": "^29.4.0",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  }
+}
