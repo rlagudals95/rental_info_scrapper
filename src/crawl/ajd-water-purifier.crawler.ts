@@ -715,10 +715,23 @@ export function parseAjdRankingCatalog(
   };
 }
 
+function buildAjdRankingPageUrl(page: number): string {
+  const url = new URL(AJD_WATER_PURIFIER_RANKING_URL);
+
+  if (page > 1) {
+    url.searchParams.set('page', String(page));
+  } else {
+    url.searchParams.delete('page');
+  }
+
+  return url.toString();
+}
+
 export async function fetchAjdWaterPurifierRankingHtml(
   fetchImpl: FetchLike = fetch,
+  page: number = 1,
 ): Promise<string> {
-  const response = await fetchImpl(AJD_WATER_PURIFIER_RANKING_URL, {
+  const response = await fetchImpl(buildAjdRankingPageUrl(page), {
     headers: {
       'user-agent': AJD_USER_AGENT,
     },
@@ -751,15 +764,45 @@ export async function fetchAjdWaterPurifierDetailHtml(
 export async function crawlAjdWaterPurifierCatalog(
   fetchImpl: FetchLike = fetch,
 ): Promise<AjdWaterPurifierCatalog> {
-  const html = await fetchAjdWaterPurifierRankingHtml(fetchImpl);
-  const catalog = parseAjdRankingCatalog(html);
-  const rankingPayloadProducts = parseAjdRankingPayloadProducts(html);
+  const firstPageHtml = await fetchAjdWaterPurifierRankingHtml(fetchImpl, 1);
+  const firstPageCatalog = parseAjdRankingCatalog(firstPageHtml);
+  const pageSize = Math.max(firstPageCatalog.products.length, 1);
+  const totalPages = Math.max(
+    1,
+    Math.ceil((firstPageCatalog.pageTotalCount ?? firstPageCatalog.products.length) / pageSize),
+  );
+
+  const allProducts: AjdWaterPurifierProduct[] = [...firstPageCatalog.products];
+  const allRankingPayloadProducts: AjdRankingPayloadProduct[] = [
+    ...parseAjdRankingPayloadProducts(firstPageHtml),
+  ];
+
+  for (let page = 2; page <= totalPages; page += 1) {
+    try {
+      const pageHtml = await fetchAjdWaterPurifierRankingHtml(fetchImpl, page);
+      const pageCatalog = parseAjdRankingCatalog(pageHtml);
+      allProducts.push(...pageCatalog.products);
+      allRankingPayloadProducts.push(...parseAjdRankingPayloadProducts(pageHtml));
+    } catch {
+      break;
+    }
+  }
+
+  const dedupedProducts = allProducts;
+  const rankingPayloadProducts = Array.from(
+    new Map(
+      allRankingPayloadProducts.map((product) => [
+        `${product.lowerCategorySn}:${product.sn}:${product.modelName}`,
+        product,
+      ]),
+    ).values(),
+  );
   const rankingPayloadMap = new Map(
     rankingPayloadProducts.map((product) => [buildAjdRankingLookupKey(product), product]),
   );
 
   const products = await Promise.all(
-    catalog.products.map(async (product) => {
+    dedupedProducts.map(async (product) => {
       const rankingPayloadProduct =
         rankingPayloadMap.get(
           buildAjdRankingLookupKey({
@@ -801,8 +844,9 @@ export async function crawlAjdWaterPurifierCatalog(
   );
 
   return {
-    ...catalog,
+    ...firstPageCatalog,
     products,
+    productsCount: products.length,
     offersCount: products.reduce((count, product) => count + product.offers.length, 0),
   };
 }
