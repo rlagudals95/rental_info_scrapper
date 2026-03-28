@@ -1,10 +1,13 @@
 import { ManagementType, SupportPricingModel } from '../comparison/comparison.types';
+import { mapWithConcurrency, retryAsync } from './crawl-execution.util';
 
 const AJD_BASE_URL = 'https://www.ajd.co.kr';
 export const AJD_WATER_PURIFIER_RANKING_URL =
   `${AJD_BASE_URL}/electronics/overview/2010-4020/ranking?tab=1`;
 const AJD_USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36';
+const AJD_DETAIL_ENRICHMENT_CONCURRENCY = 8;
+const AJD_DETAIL_FETCH_ATTEMPTS = 3;
 
 type FetchLike = typeof fetch;
 type AjdNuxtPayload = unknown[];
@@ -68,6 +71,8 @@ export interface AjdWaterPurifierOffer {
     installCharge?: number | null;
     rawManagementType?: string | null;
     cardDiscountAmount?: number | null;
+    cardNames?: string[];
+    cardCompanies?: string[];
   };
 }
 
@@ -591,6 +596,70 @@ function resolveAjdMaxCardDiscountAmount(cards: AjdDetailCard[]): number | null 
   return Math.max(...discounts);
 }
 
+function normalizeAjdCardCompany(cardName: string): string | null {
+  const normalized = cardName.toLowerCase();
+
+  if (normalized.includes('kb') || normalized.includes('국민')) {
+    return 'KB카드';
+  }
+
+  if (normalized.includes('롯데') || normalized.includes('loca')) {
+    return '롯데카드';
+  }
+
+  if (normalized.includes('하나')) {
+    return '하나카드';
+  }
+
+  if (normalized.includes('삼성')) {
+    return '삼성카드';
+  }
+
+  if (normalized.includes('우리')) {
+    return '우리카드';
+  }
+
+  if (normalized.includes('신한')) {
+    return '신한카드';
+  }
+
+  if (normalized.includes('농협') || normalized.includes('nh')) {
+    return 'NH농협카드';
+  }
+
+  if (normalized.includes('현대')) {
+    return '현대카드';
+  }
+
+  if (normalized.includes('bc')) {
+    return 'BC카드';
+  }
+
+  return null;
+}
+
+function resolveAjdCardMetadata(cards: AjdDetailCard[]): {
+  cardNames: string[];
+  cardCompanies: string[];
+} {
+  const sortedCards = cards
+    .filter((card) => card.name)
+    .slice()
+    .sort((left, right) => (right.discountAmount ?? 0) - (left.discountAmount ?? 0));
+
+  const cardNames = sortedCards
+    .map((card) => card.name?.trim() ?? '')
+    .filter((name) => name.length > 0);
+  const cardCompanies = Array.from(
+    new Set(cardNames.map((cardName) => normalizeAjdCardCompany(cardName)).filter(Boolean)),
+  ) as string[];
+
+  return {
+    cardNames,
+    cardCompanies,
+  };
+}
+
 function attachAjdDetailUrl(
   product: AjdWaterPurifierProduct,
   detailUrl: string,
@@ -627,6 +696,7 @@ export function mergeAjdProductWithDetailPayload(
     detailPayload.lowerCategorySn,
   );
   const cardDiscountAmount = resolveAjdMaxCardDiscountAmount(detailPayload.cards);
+  const cardMetadata = resolveAjdCardMetadata(detailPayload.cards);
 
   if (detailPayload.chargeOptions.length === 0) {
     return {
@@ -637,6 +707,15 @@ export function mergeAjdProductWithDetailPayload(
         detailAverageScore: detailPayload.averageScore,
         recommendLabel: detailPayload.recommendLabel,
       },
+      offers: productWithDetailUrl.offers.map((offer) => ({
+        ...offer,
+        metadata: {
+          ...offer.metadata,
+          cardDiscountAmount,
+          cardNames: cardMetadata.cardNames,
+          cardCompanies: cardMetadata.cardCompanies,
+        },
+      })),
     };
   }
 
@@ -676,6 +755,8 @@ export function mergeAjdProductWithDetailPayload(
         installCharge: option.installCharge,
         rawManagementType: option.rawManagementType,
         cardDiscountAmount,
+        cardNames: cardMetadata.cardNames,
+        cardCompanies: cardMetadata.cardCompanies,
       },
     } satisfies AjdWaterPurifierOffer;
   });
@@ -801,8 +882,10 @@ export async function crawlAjdWaterPurifierCatalog(
     rankingPayloadProducts.map((product) => [buildAjdRankingLookupKey(product), product]),
   );
 
-  const products = await Promise.all(
-    dedupedProducts.map(async (product) => {
+  const products = await mapWithConcurrency(
+    dedupedProducts,
+    AJD_DETAIL_ENRICHMENT_CONCURRENCY,
+    async (product) => {
       const rankingPayloadProduct =
         rankingPayloadMap.get(
           buildAjdRankingLookupKey({
@@ -829,7 +912,12 @@ export async function crawlAjdWaterPurifierCatalog(
       );
 
       try {
-        const detailHtml = await fetchAjdWaterPurifierDetailHtml(detailUrl, fetchImpl);
+        const detailHtml = await retryAsync(
+          () => fetchAjdWaterPurifierDetailHtml(detailUrl, fetchImpl),
+          {
+            maxAttempts: AJD_DETAIL_FETCH_ATTEMPTS,
+          },
+        );
         const detailPayload = parseAjdDetailPayload(detailHtml);
 
         if (!detailPayload) {
@@ -840,7 +928,7 @@ export async function crawlAjdWaterPurifierCatalog(
       } catch {
         return productWithDetailUrl;
       }
-    }),
+    },
   );
 
   return {

@@ -5,6 +5,9 @@ interface OfferRow {
   channel: string;
   external_product_id: string;
   product_name: string;
+  has_affiliate_card: string;
+  primary_card_company: string;
+  primary_card_name: string;
   contract_term_months: string;
   public_monthly_fee: string;
   support_pricing_model: string;
@@ -66,6 +69,9 @@ function parseCsv(content: string): OfferRow[] {
       channel: raw.channel ?? '',
       external_product_id: raw.external_product_id ?? '',
       product_name: raw.product_name ?? '',
+      has_affiliate_card: raw.has_affiliate_card ?? '',
+      primary_card_company: raw.primary_card_company ?? '',
+      primary_card_name: raw.primary_card_name ?? '',
       contract_term_months: raw.contract_term_months ?? '',
       public_monthly_fee: raw.public_monthly_fee ?? '',
       support_pricing_model: raw.support_pricing_model ?? '',
@@ -100,7 +106,26 @@ function summarizeChannel(rows: OfferRow[], channel: Channel): { ok: boolean; li
   let productsWithMultiTerms = 0;
   let productsWithTermFeeVariance = 0;
   let productsWithTermSupportVariance = 0;
+  let offersWithAffiliateCard = 0;
+  let offersWithPrimaryCardCompany = 0;
+  let offersWithPrimaryCardName = 0;
   const suspiciousProducts: Array<{ productId: string; name: string; terms: string[] }> = [];
+
+  channelRows.forEach((row) => {
+    if (row.has_affiliate_card !== 'true') {
+      return;
+    }
+
+    offersWithAffiliateCard += 1;
+
+    if (row.primary_card_company.length > 0) {
+      offersWithPrimaryCardCompany += 1;
+    }
+
+    if (row.primary_card_name.length > 0) {
+      offersWithPrimaryCardName += 1;
+    }
+  });
 
   for (const [productId, productRows] of byProduct.entries()) {
     const terms = Array.from(
@@ -153,7 +178,18 @@ function summarizeChannel(rows: OfferRow[], channel: Channel): { ok: boolean; li
 
   const lines = [
     `- ${channel}: products=${byProduct.size}, multi_terms=${productsWithMultiTerms}, term_fee_variance=${productsWithTermFeeVariance}, term_support_variance=${productsWithTermSupportVariance}`,
+    `  card_metadata: has_card=${offersWithAffiliateCard}, company_filled=${offersWithPrimaryCardCompany}, name_filled=${offersWithPrimaryCardName}`,
   ];
+
+  if (
+    offersWithAffiliateCard > 0 &&
+    (offersWithPrimaryCardCompany < offersWithAffiliateCard ||
+      offersWithPrimaryCardName < offersWithAffiliateCard)
+  ) {
+    lines.push(
+      `  ⚠️ 카드할인 오퍼 중 카드사/카드명 누락 ${offersWithAffiliateCard - offersWithPrimaryCardCompany}/${offersWithAffiliateCard - offersWithPrimaryCardName}`,
+    );
+  }
 
   if (suspiciousProducts.length > 0) {
     lines.push(
