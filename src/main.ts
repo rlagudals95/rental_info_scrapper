@@ -4,8 +4,10 @@ import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 
 import { AppModule } from './app.module';
+import { loadEnv } from './db/load-env';
 
 async function bootstrap() {
+  loadEnv();
   const app = await NestFactory.create(AppModule);
   app.enableCors();
 

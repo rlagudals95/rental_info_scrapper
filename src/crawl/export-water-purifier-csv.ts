@@ -7,7 +7,7 @@ type FetchLike = typeof fetch;
 type CsvCellValue = string | number | boolean | null | undefined;
 type CsvRow = Record<string, CsvCellValue>;
 
-const PRODUCT_CSV_COLUMNS = [
+export const PRODUCT_CSV_COLUMNS = [
   'channel',
   'fetched_at',
   'source_url',
@@ -26,7 +26,7 @@ const PRODUCT_CSV_COLUMNS = [
   'metadata_json',
 ] as const;
 
-const OFFER_CSV_COLUMNS = [
+export const OFFER_CSV_COLUMNS = [
   'channel',
   'fetched_at',
   'source_url',

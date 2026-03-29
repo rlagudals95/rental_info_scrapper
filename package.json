@@ -5,6 +5,7 @@
   "description": "NestJS MVP for public water purifier rental comparison",
   "license": "UNLICENSED",
   "scripts": {
+    "batch:daily": "tsx src/crawl/run-daily-batch.ts",
     "crawl:ajd": "tsx src/crawl/ajd-water-purifier.crawler.ts",
     "crawl:all": "tsx src/crawl/all-water-purifier.crawler.ts",
     "crawl:csv": "tsx src/crawl/export-water-purifier-csv.ts",

@@ -238,6 +238,25 @@ CREATE TABLE IF NOT EXISTS offer_price_snapshots (
 CREATE INDEX IF NOT EXISTS idx_offer_price_snapshots_offer_captured
   ON offer_price_snapshots (channel_offer_id, captured_at DESC);
 
+CREATE TABLE IF NOT EXISTS batch_runs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trigger_type TEXT NOT NULL
+    CHECK (trigger_type IN ('scheduled', 'manual')),
+  started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  finished_at TIMESTAMPTZ,
+  status TEXT NOT NULL
+    CHECK (status IN ('running', 'success', 'partial_success', 'failed')),
+  channel_count INTEGER NOT NULL DEFAULT 0,
+  success_channel_count INTEGER NOT NULL DEFAULT 0,
+  failed_channel_count INTEGER NOT NULL DEFAULT 0,
+  warning_count INTEGER NOT NULL DEFAULT 0,
+  latest_products_csv_path TEXT,
+  latest_offers_csv_path TEXT,
+  archived_products_csv_path TEXT,
+  archived_offers_csv_path TEXT,
+  summary_json JSONB NOT NULL DEFAULT '{}'::JSONB
+);
+
 CREATE TABLE IF NOT EXISTS crawl_sources (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   sales_channel_id UUID REFERENCES sales_channels(id) ON DELETE SET NULL,
@@ -257,6 +276,9 @@ CREATE TABLE IF NOT EXISTS crawl_sources (
 CREATE INDEX IF NOT EXISTS idx_crawl_sources_kind_priority
   ON crawl_sources (source_kind, source_priority, is_active);
 
+CREATE UNIQUE INDEX IF NOT EXISTS uq_crawl_sources_crawler_key
+  ON crawl_sources (crawler_key);
+
 CREATE TABLE IF NOT EXISTS crawl_runs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   crawl_source_id UUID NOT NULL REFERENCES crawl_sources(id) ON DELETE CASCADE,
@@ -271,8 +293,191 @@ CREATE TABLE IF NOT EXISTS crawl_runs (
   metadata JSONB NOT NULL DEFAULT '{}'::JSONB
 );
 
+ALTER TABLE crawl_runs
+  ADD COLUMN IF NOT EXISTS batch_run_id UUID REFERENCES batch_runs(id) ON DELETE SET NULL;
+
+ALTER TABLE crawl_runs
+  ADD COLUMN IF NOT EXISTS channel_slug TEXT;
+
+ALTER TABLE crawl_runs
+  ADD COLUMN IF NOT EXISTS items_failed INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE crawl_runs
+  ADD COLUMN IF NOT EXISTS drift_status TEXT NOT NULL DEFAULT 'ok';
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'crawl_runs_drift_status_check'
+  ) THEN
+    ALTER TABLE crawl_runs
+      ADD CONSTRAINT crawl_runs_drift_status_check
+      CHECK (drift_status IN ('ok', 'warning', 'critical', 'informational'));
+  END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS idx_crawl_runs_source_started
   ON crawl_runs (crawl_source_id, started_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_crawl_runs_batch_started
+  ON crawl_runs (batch_run_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS current_crawled_products (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  crawl_run_id UUID NOT NULL REFERENCES crawl_runs(id) ON DELETE RESTRICT,
+  channel_slug TEXT NOT NULL,
+  fetched_at TIMESTAMPTZ NOT NULL,
+  source_url TEXT NOT NULL,
+  external_product_id TEXT NOT NULL,
+  brand_name TEXT NOT NULL,
+  product_name TEXT NOT NULL,
+  model_code TEXT NOT NULL,
+  detail_url TEXT NOT NULL,
+  thumbnail_url TEXT,
+  feature_tags JSONB NOT NULL DEFAULT '[]'::JSONB,
+  offer_count INTEGER NOT NULL DEFAULT 0,
+  rating NUMERIC(8, 2),
+  review_count INTEGER,
+  order_count INTEGER,
+  ranking_rank INTEGER,
+  metadata JSONB NOT NULL DEFAULT '{}'::JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (channel_slug, external_product_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_current_crawled_products_channel_model
+  ON current_crawled_products (channel_slug, model_code);
+
+CREATE TABLE IF NOT EXISTS current_crawled_offers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  crawl_run_id UUID NOT NULL REFERENCES crawl_runs(id) ON DELETE RESTRICT,
+  channel_slug TEXT NOT NULL,
+  fetched_at TIMESTAMPTZ NOT NULL,
+  source_url TEXT NOT NULL,
+  external_product_id TEXT NOT NULL,
+  external_offer_id TEXT NOT NULL,
+  brand_name TEXT NOT NULL,
+  product_name TEXT NOT NULL,
+  model_code TEXT NOT NULL,
+  product_detail_url TEXT NOT NULL,
+  offer_url TEXT NOT NULL,
+  public_monthly_fee NUMERIC(14, 2),
+  card_applied_monthly_fee NUMERIC(14, 2),
+  card_discount_amount NUMERIC(14, 2),
+  has_affiliate_card BOOLEAN NOT NULL DEFAULT FALSE,
+  primary_card_company TEXT,
+  primary_card_name TEXT,
+  card_companies JSONB NOT NULL DEFAULT '[]'::JSONB,
+  card_names JSONB NOT NULL DEFAULT '[]'::JSONB,
+  contract_term_months INTEGER,
+  obligation_term_months INTEGER,
+  ownership_transfer_months INTEGER,
+  management_type TEXT
+    CHECK (management_type IN ('visit', 'self')),
+  maintenance_cycle_months INTEGER,
+  maintenance_period_months INTEGER,
+  commitment_period_months INTEGER,
+  promo_duration_months INTEGER,
+  post_promo_monthly_fee NUMERIC(14, 2),
+  support_pricing_model TEXT NOT NULL
+    CHECK (support_pricing_model IN ('fixed_public', 'range_public', 'quote_required', 'hidden')),
+  support_amount NUMERIC(14, 2),
+  support_amount_min NUMERIC(14, 2),
+  support_amount_max NUMERIC(14, 2),
+  rating NUMERIC(8, 2),
+  review_count INTEGER,
+  order_count INTEGER,
+  ranking_rank INTEGER,
+  feature_tags JSONB NOT NULL DEFAULT '[]'::JSONB,
+  metadata JSONB NOT NULL DEFAULT '{}'::JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (channel_slug, external_offer_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_current_crawled_offers_channel_product
+  ON current_crawled_offers (channel_slug, external_product_id);
+
+CREATE INDEX IF NOT EXISTS idx_current_crawled_offers_channel_term
+  ON current_crawled_offers (channel_slug, contract_term_months, management_type);
+
+CREATE TABLE IF NOT EXISTS crawled_product_snapshots (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  crawl_run_id UUID NOT NULL REFERENCES crawl_runs(id) ON DELETE CASCADE,
+  channel_slug TEXT NOT NULL,
+  fetched_at TIMESTAMPTZ NOT NULL,
+  source_url TEXT NOT NULL,
+  external_product_id TEXT NOT NULL,
+  brand_name TEXT NOT NULL,
+  product_name TEXT NOT NULL,
+  model_code TEXT NOT NULL,
+  detail_url TEXT NOT NULL,
+  thumbnail_url TEXT,
+  feature_tags JSONB NOT NULL DEFAULT '[]'::JSONB,
+  offer_count INTEGER NOT NULL DEFAULT 0,
+  rating NUMERIC(8, 2),
+  review_count INTEGER,
+  order_count INTEGER,
+  ranking_rank INTEGER,
+  metadata JSONB NOT NULL DEFAULT '{}'::JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (crawl_run_id, channel_slug, external_product_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_crawled_product_snapshots_channel_fetched
+  ON crawled_product_snapshots (channel_slug, fetched_at DESC);
+
+CREATE TABLE IF NOT EXISTS crawled_offer_snapshots (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  crawl_run_id UUID NOT NULL REFERENCES crawl_runs(id) ON DELETE CASCADE,
+  channel_slug TEXT NOT NULL,
+  fetched_at TIMESTAMPTZ NOT NULL,
+  source_url TEXT NOT NULL,
+  external_product_id TEXT NOT NULL,
+  external_offer_id TEXT NOT NULL,
+  brand_name TEXT NOT NULL,
+  product_name TEXT NOT NULL,
+  model_code TEXT NOT NULL,
+  product_detail_url TEXT NOT NULL,
+  offer_url TEXT NOT NULL,
+  public_monthly_fee NUMERIC(14, 2),
+  card_applied_monthly_fee NUMERIC(14, 2),
+  card_discount_amount NUMERIC(14, 2),
+  has_affiliate_card BOOLEAN NOT NULL DEFAULT FALSE,
+  primary_card_company TEXT,
+  primary_card_name TEXT,
+  card_companies JSONB NOT NULL DEFAULT '[]'::JSONB,
+  card_names JSONB NOT NULL DEFAULT '[]'::JSONB,
+  contract_term_months INTEGER,
+  obligation_term_months INTEGER,
+  ownership_transfer_months INTEGER,
+  management_type TEXT
+    CHECK (management_type IN ('visit', 'self')),
+  maintenance_cycle_months INTEGER,
+  maintenance_period_months INTEGER,
+  commitment_period_months INTEGER,
+  promo_duration_months INTEGER,
+  post_promo_monthly_fee NUMERIC(14, 2),
+  support_pricing_model TEXT NOT NULL
+    CHECK (support_pricing_model IN ('fixed_public', 'range_public', 'quote_required', 'hidden')),
+  support_amount NUMERIC(14, 2),
+  support_amount_min NUMERIC(14, 2),
+  support_amount_max NUMERIC(14, 2),
+  rating NUMERIC(8, 2),
+  review_count INTEGER,
+  order_count INTEGER,
+  ranking_rank INTEGER,
+  feature_tags JSONB NOT NULL DEFAULT '[]'::JSONB,
+  metadata JSONB NOT NULL DEFAULT '{}'::JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (crawl_run_id, channel_slug, external_offer_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_crawled_offer_snapshots_channel_fetched
+  ON crawled_offer_snapshots (channel_slug, fetched_at DESC);
 
 CREATE TABLE IF NOT EXISTS raw_documents (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
